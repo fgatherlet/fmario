@@ -87,13 +87,9 @@ exec ros -Q -- $0 "$@"
          (format t ">>~s~%" response)
          (let ((session-id (jsown:val response "sessionId")))
            (let ((response (request "WebDriver:Navigate"
-                                    '(:obj
-                                      ("sessionId" . "0cfd6d47-288f-1146-908f-ab148251b27c")
-                                      ("url" . "https://www.apple.com")
+                                    `(:obj
+                                      ("sessionId" . ,session-id)
+                                      ("url" . "https://www.google.com")
                                       ))))
              (format t ">>~s~%" response))))
-
-    ;;(sleep 10)
     (deinit)))
-
-
