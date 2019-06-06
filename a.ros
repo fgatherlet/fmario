@@ -79,17 +79,24 @@ exec ros -Q -- $0 "$@"
         (assert (= 1 type))
         (setf (gethash id *msg*) (or error-body body))))))
 
+
+
+
+
 (defun main (&rest argv)
   (declare (ignorable argv))
   (init)
   (unwind-protect
        (let ((response (request "WebDriver:NewSession" '(:obj))))
+         ;;(request "Marionette:Quit" '(:obj))
          (format t ">>~s~%" response)
          (let ((session-id (jsown:val response "sessionId")))
            (let ((response (request "WebDriver:Navigate"
                                     `(:obj
                                       ("sessionId" . ,session-id)
-                                      ("url" . "https://www.google.com")
+                                      ("url" . "https://www.google.com?q=b")
                                       ))))
              (format t ">>~s~%" response))))
-    (deinit)))
+    (deinit))
+  (loop (sleep 10000))
+  )

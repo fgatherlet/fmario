@@ -1,4 +1,4 @@
-# This Source Code Form is subject to the terms of the Mozilla Public
+s# This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
@@ -38,19 +38,6 @@ class MouseButton(object):
 
 
 class ActionSequence(object):
-    r"""API for creating and performing action sequences.
-
-    Each action method adds one or more actions to a queue. When perform()
-    is called, the queued actions fire in order.
-
-    May be chained together as in::
-
-         ActionSequence(self.marionette, "key", id) \
-            .key_down("a") \
-            .key_up("a") \
-            .perform()
-    """
-
     def __init__(self, marionette, action_type, input_id, pointer_params=None):
         self.marionette = marionette
         self._actions = []
@@ -79,9 +66,16 @@ class ActionSequence(object):
     def _pointer_action(self, subtype, button):
         self._actions.append({"type": subtype, "button": button})
 
+
+
+
+
     def pause(self, duration):
         self._actions.append({"type": "pause", "duration": duration})
         return self
+
+
+
 
     def pointer_move(self, x, y, duration=None, origin=None):
         """Queue a pointerMove action.
