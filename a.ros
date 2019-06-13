@@ -4,7 +4,7 @@
 exec ros -Q -- $0 "$@"
 |#
 (ros:ensure-asdf)
-(ql:quickload '(:usocket :cl-ppcre :jsown :series))
+(ql:quickload '(:usocket :cl-ppcre :jsown :series :babel))
 
 (defpackage :scratch
   (:use
@@ -23,7 +23,8 @@ exec ros -Q -- $0 "$@"
          (s (usocket:socket-stream *sock*))
          (str  (jsown:to-json (list 0 msgid cmd obj)))
          (len (length str)))
-    (format s "~a:~a" len str)
+
+    (write-sequence (babel:string-to-octets (format nil "~a:~a" len str)) s)
     (finish-output s)
 
     (loop repeat 100
@@ -34,69 +35,158 @@ exec ros -Q -- $0 "$@"
                  (remhash msgid *msg*)
                  (return-from request response)))
              (sleep 0.05))
+
+    (format t ">>>fail to request. buffer:~s~%" *buffer*)
+    nil
     ))
 
+(defun ff-req (cmd &rest kv)
+  (let ((body (cons :obj (collect (mapping (((k v) (chunk 2 2 (scan kv))))
+                                    (cons k v))))))
+    (request cmd body)))
+
+(defvar *debugp* nil)
 (defvar *sock* nil)
 (defvar *buffer* nil)
 (defvar *buffer-fp* nil)
+(defvar *session* nil)
+;;(defvar *readbuf-len* 1024)
+;;(defvar *readbuf* (make-array *readbuf-len* :element-type '(unsigned-byte 8)))
 
-(defun init ()
-  (setf *sock* (usocket:socket-connect "localhost" 2828))
+(defun ff-init ()
+  (setf *sock* (usocket:socket-connect "localhost" 2828 :element-type '(unsigned-byte 8)))
   (setf *buffer* "")
   (setf *buffer-fp* 0)
-  )
-(defun deinit ()
+
+  ;; session
+  (when *session* (error "*session* is not null :~a" *session*))
+  (let ((response (ff-req "WebDriver:NewSession")))
+    (let ((session (jsown:val response "sessionId")))
+      (when session
+        (setf *session* session)))
+    response
+    ))
+(defun ff-deinit ()
+  (when *session*
+    (let ((response (ff-req "WebDriver:DeleteSession")))
+      (setf *session* nil)
+      response))
   (usocket:socket-close *sock*))
 
-(defun try-receive (&aux msg-str)
+(defun ff-deinit-force ()
+  (when *sock*
+    (usocket:socket-close *sock*))
+  (setf *session* nil))
+
+(let ((buf (make-array 1 :element-type '(unsigned-byte 8))))
+  (defun x-read-char-no-hang (stream)
+    "read-byte-no-hang is not exist.."
+    (let ((len (read-sequence buf stream)))
+      (if (= 1 len)
+        (code-char (aref buf 0))
+        nil))))
+
+(defun try-receive ()
+  (format t ">>>try-receive~%")
   (let ((s (usocket:socket-stream *sock*))
-        tmp)
-    (loop for x = (read-char-no-hang s nil nil)
-          while x
-          do
-            (push x tmp))
-    (when tmp
-      (setf *buffer* (concatenate 'string *buffer* (coerce (nreverse tmp) 'string))))
-    (multiple-value-bind (match reg) (ppcre:scan-to-strings "^(\\d+):" *buffer* :start *buffer-fp*)
-      (when match
-        (let* ((len (parse-integer (aref reg 0)))
-               (new-buffer-fp (+ *buffer-fp* (length match)))
-               (new-new-buffer-fp (+ new-buffer-fp len)))
-          (format t ">>~a:~a~%" new-buffer-fp new-new-buffer-fp)
-          (setf msg-str (subseq *buffer* new-buffer-fp new-new-buffer-fp))
-          (setf *tmp-msg-str* msg-str)
-          (setf *buffer-fp* new-new-buffer-fp)))))
-  (when msg-str
-    (format t "debug msg-str:~a~%" msg-str)
-    (let ((msg (jsown:parse msg-str)))
-      (unless msg (error "cannot parse msg-str:~s" msg-str))
+        lenbuf
+        len
+        bodybuf
+        ;;(bodybuf-len 0)
+        body)
+
+    (loop for x = (x-read-char-no-hang s)
+          repeat 100
+          until (eql #\: x)
+          do (when x
+               (push x lenbuf)))
+    (unless lenbuf (return-from try-receive))
+    (setf len (parse-integer (coerce (reverse lenbuf) 'string)))
+
+    (format t ">>len:~s~%" len)
+
+    ;;;;(ql:quickload :flexi-streams)
+    ;;(let ((a (make-array 10 :element-type '(unsigned-byte 8))))
+    ;;  (flex:with-input-from-sequence (is #(100 200))
+    ;;    (let ((len (read-sequence a is)))
+    ;;      (list len a))))
+
+    (setq bodybuf (make-array len :element-type '(unsigned-byte 8)))
+    (let ((idx 0))
+      (block nil
+        (loop for read-len = (read-sequence bodybuf s :start idx)
+              do (incf idx read-len)
+                 (when (= idx len)
+                   (return)))))
+    (setf body (babel:octets-to-string bodybuf))
+    ;;(format t "debug body:[~a]~%" body)
+    (let ((msg (jsown:parse body)))
+      (unless msg (error "cannot parse msg-str:~s" body))
       ;; initial message. skip.
       (when (eql :obj (car msg))
         (format t "initial response:~s" msg)
         (return-from try-receive nil))
 
-      (destructuring-bind (type id error-body body) msg
+      (destructuring-bind (type id error-obj obj) msg
         (assert (= 1 type))
-        (setf (gethash id *msg*) (or error-body body))))))
+        (setf (gethash id *msg*) (or error-obj obj))))))
 
+(defun resval (res)
+  (jsown:val res "value"))
 
+(defun ff-url ()
+  (let ((res (ff-req "WebDriver:GetCurrentURL")))
+    (resval res)))
 
+(defun (setf ff-url) (url)
+  (let ((res (ff-req "WebDriver:Navigate" "url" url)))
+    res))
+
+(defun ff-title ()
+  (let ((res (ff-req "WebDriver:GetTitle")))
+    (resval res)))
+
+(defun ff-window-handles ()
+  (let ((res (ff-req "WebDriver:GetWindowHandles")))
+    res))
+
+#+nil(defun ff-chrome-window-handles ()
+       "whatisthis?"
+       (let ((res (ff-req "WebDriver:GetChromeWindowHandles")))
+         res))
+
+(defun ff-source ()
+  (let ((res (ff-req "WebDriver:GetPageSource")))
+    res)
+  (format t ">>end~%")
+  )
 
 
 (defun main (&rest argv)
   (declare (ignorable argv))
-  (init)
-  (unwind-protect
-       (let ((response (request "WebDriver:NewSession" '(:obj))))
-         ;;(request "Marionette:Quit" '(:obj))
-         (format t ">>~s~%" response)
-         (let ((session-id (jsown:val response "sessionId")))
-           (let ((response (request "WebDriver:Navigate"
-                                    `(:obj
-                                      ("sessionId" . ,session-id)
-                                      ("url" . "https://www.google.com?q=b")
-                                      ))))
-             (format t ">>~s~%" response))))
-    (deinit))
-  (loop (sleep 10000))
+  ;;(trace ff-url ff-source ff-req request x-read-char-no-hang)
+  
+  (format t ">>>>~%")
+  
+  (ff-deinit-force)
+  
+  (sleep 1)
+  
+  (ff-init)
+  
+  (format t ">>>>~%")
+  
+  (sleep 1)
+  
+  (setf (ff-url) "https://www.google.com")
+  
+  (format t ">>>>~%")
+  
+  (sleep 1)
+  
+  (format t ">>>~%")
+  (let ((*debugp* t))
+    (ff-source)
+    )
+  (format t ">>>@~%")
   )
